@@ -1,5 +1,7 @@
 import { Mat4 } from 'gl-matrix';
 
+
+    
 const adapter = await navigator.gpu.requestAdapter({
     powerPreference: "high-performance"
 });
@@ -23,15 +25,15 @@ const format = navigator.gpu.getPreferredCanvasFormat();
 context.configure({ device, format });
 
 const vertices = new Float32Array([
-    // position      // color          // index
-    -1, -1, -1,      0,  0,  0,  1,    //   0
-    -1, -1,  1,      0,  0,  1,  1,    //   1
-    -1,  1, -1,      0,  1,  0,  1,    //   2
-    -1,  1,  1,      0,  1,  1,  1,    //   3
-     1, -1, -1,      1,  0,  0,  1,    //   4
-     1, -1,  1,      1,  0,  1,  1,    //   5
-     1,  1, -1,      1,  1,  0,  1,    //   6
-     1,  1,  1,      1,  1,  1,  1,    //   7
+  // positions     // texcoords
+  -1, -1, -1,      0,  0,
+  -1, -1,  1,      0,  1,
+  -1,  1, -1,      1,  0,
+  -1,  1,  1,      1,  1,
+   1, -1, -1,      0,  0,
+   1, -1,  1,      0,  1,
+   1,  1, -1,      1,  0,
+   1,  1,  1,      1,  1,
 ]);
 
 const indices = new Uint32Array([
@@ -58,25 +60,51 @@ device.queue.writeBuffer(vertexBuffer, 0, vertices);
 const indexBuffer = device.createBuffer({
   size: indices.byteLength,
   usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.INDEX
-})
+});
+
+const depthTexture = device.createTexture({
+    size: [canvas.width, canvas.height],
+    format: 'depth24plus',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT,
+});
+
+const imageBitmap = await fetch('image.png')
+    .then(response => response.blob())
+    .then(blob => createImageBitmap(blob));
+
+
+const texture = device.createTexture({
+    size: [imageBitmap.width, imageBitmap.height],
+    format: 'rgba8unorm',
+    usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        GPUTextureUsage.COPY_DST,
+});
+
+device.queue.copyExternalImageToTexture(
+    { source: imageBitmap },
+    { texture },
+    [imageBitmap.width, imageBitmap.height]);
+
 
 device.queue.writeBuffer(indexBuffer, 0, indices);
 
-const vertexLayout: GPUVertexBufferLayout = {
-  arrayStride: 28, // (3 + 4) * 4, ker je v bajtih
+const vertexBufferLayout: GPUVertexBufferLayout = {
+  arrayStride: 20,
   attributes: [
     {
-      format: 'float32x3',
-      offset: 0,
       shaderLocation: 0,
+      offset: 0,
+      format: "float32x3",
     },
     {
-      format: 'float32x4',
-      offset: 12, // tri komponente preskočimo: 3 * 4
-      shaderLocation: 1
-    }
-  ]
-}
+      shaderLocation: 1,
+      offset: 12,
+      format: "float32x2",
+    },
+  ],
+};
 
 const response = await fetch("./shader.wgsl");
 const code = await response.text();
@@ -86,7 +114,7 @@ const shaderModule = device.createShaderModule({ code });
 const pipeline = device.createRenderPipeline({
   vertex: {
     module: shaderModule,
-    buffers: [vertexLayout]
+    buffers: [vertexBufferLayout]
   },
   fragment: {
     module: shaderModule,
@@ -96,7 +124,15 @@ const pipeline = device.createRenderPipeline({
   primitive: {
     topology: "triangle-list",
   },
+  depthStencil: {
+    depthWriteEnabled: true,
+    depthCompare: 'less',
+    format: 'depth24plus',
+  },
 });
+
+const sampler = device.createSampler();
+
 
 const modelMatrix = new Mat4();
 const uniformBuffer = device.createBuffer({
@@ -110,9 +146,15 @@ const uniformBindGroup = device.createBindGroup({
   entries: [{
     binding: 0,
     resource: uniformBuffer
-  }]
-});
+  },
+  {
+    binding: 1,
+    resource: texture.createView()
+  },
+  { binding: 2, resource: sampler },
 
+]
+});
 function update() { // Animiramo
   // let time = performance.now() * 0.001; // milisekunde -> sekunde
   // Mat4.fromZRotation(modelMatrix, time);
@@ -143,6 +185,13 @@ device.queue.writeBuffer(uniformBuffer, 0, matrix);
         storeOp: "store",
       },
     ],
+    depthStencilAttachment: {
+    view: depthTexture.createView(),
+    depthClearValue: 1,
+    depthLoadOp: 'clear',
+    depthStoreOp: 'discard',
+    }
+
   });
   renderPass.setPipeline(pipeline);
   renderPass.setBindGroup(0, uniformBindGroup)
